@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2
+
+- Fixed: `sh: /dev/tty: Device not configured` leaked to stderr when the terminal size was
+  probed without a terminal. The redirect silenced `stty`, but the shell reports a failed
+  `< /dev/tty` itself.
+
 ## 0.2.1
 
 Legibility of the picker.

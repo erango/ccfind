@@ -11,7 +11,7 @@
 
 set -uo pipefail
 
-VERSION="0.2.1"
+VERSION="0.2.2"
 REPO="erango/ccfind"
 TAP="erango/tap/ccfind"
 
@@ -377,7 +377,9 @@ sub render_static {
 # ---------------------------------------------------------------- the picker
 
 sub tty_size {
-    my $s = `stty size < /dev/tty 2>/dev/null`;
+    # brace the redirect too: without a terminal it is the shell, not stty,
+    # that complains about /dev/tty
+    my $s = `{ stty size < /dev/tty; } 2>/dev/null`;
     return ($1, $2) if defined $s && $s =~ /(\d+)\s+(\d+)/;
     # no terminal (a pipe, or CI): honour LINES/COLUMNS if they are set
     return (($ENV{LINES} || 24), ($ENV{COLUMNS} || 80));
