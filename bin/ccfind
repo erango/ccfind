@@ -1,0 +1,366 @@
+#!/usr/bin/env bash
+#
+# ccfind - find and resume a Claude Code session, no matter which directory you ran it in.
+#
+# Claude Code files every session under ~/.claude/projects/<slugified-cwd>/, and
+# `claude --resume` only ever offers the sessions belonging to the current directory.
+# ccfind searches the prompts you typed across all of them, then resumes the one you
+# pick by cd'ing back to its original directory.
+#
+# Targets bash 3.2 (stock macOS) and needs only jq and system perl.
+
+set -uo pipefail
+
+VERSION="0.1.0"
+REPO="erango/ccfind"
+TAP="erango/tap/ccfind"
+
+CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+ROOT="$CFG/projects"
+CACHE="$CFG/ccfind-cache"
+IDX="$CACHE/index.tsv"
+MAN="$CACHE/manifest.tsv"
+LATEST="$CACHE/latest"
+
+LIMIT=20
+LIST_ONLY=0
+REINDEX=0
+
+usage() {
+  cat <<EOF
+ccfind $VERSION - find and resume Claude Code sessions across every directory
+
+usage:
+  ccfind <words...>     search the prompts you typed, in every project
+  ccfind                list the most recent sessions, in every project
+  ccfind -n 40 <words>  cap the number of results (default 20)
+  ccfind -l <words>     list only, do not offer to resume
+  ccfind --reindex      rebuild the prompt index from scratch
+  ccfind --version      print the version
+
+Picking a result cd's to that session's directory and runs \`claude --resume <id>\`.
+
+An index of your typed prompts lives in $CACHE and is refreshed
+incrementally - only session logs whose mtime changed are re-parsed.
+
+environment:
+  CLAUDE_CONFIG_DIR       where Claude Code keeps its data (default ~/.claude)
+  CCFIND_NO_UPDATE_CHECK  set to any value to disable the update check
+  NO_COLOR                set to any value to disable color
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -n) LIMIT="$2"; shift 2 ;;
+    -l|--list) LIST_ONLY=1; shift ;;
+    --reindex) REINDEX=1; shift ;;
+    -V|--version) echo "ccfind $VERSION"; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; break ;;
+    -*) echo "ccfind: unknown option $1" >&2; usage >&2; exit 2 ;;
+    *) break ;;
+  esac
+done
+
+case "$LIMIT" in
+  ''|*[!0-9]*) echo "ccfind: -n wants a number, got '$LIMIT'" >&2; exit 2 ;;
+esac
+
+[ -d "$ROOT" ] || { echo "ccfind: no Claude Code session store at $ROOT" >&2; exit 1; }
+
+for dep in jq perl; do
+  command -v "$dep" >/dev/null 2>&1 || { echo "ccfind: missing dependency: $dep" >&2; exit 1; }
+done
+
+QUERY="$*"
+
+COLOR=1
+if [ -n "${NO_COLOR:-}" ] || [ ! -t 1 ]; then COLOR=0; fi
+WIDTH=$( { tput cols; } 2>/dev/null || echo 80 )
+case "$WIDTH" in ''|*[!0-9]*) WIDTH=80 ;; esac
+
+# ---------------------------------------------------------------- update check
+
+# Pure-awk dotted-numeric compare; BSD sort has no -V.
+version_gt() {
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    na = split(a, x, "."); nb = split(b, y, ".");
+    n = (na > nb ? na : nb);
+    for (i = 1; i <= n; i++) {
+      ai = (i <= na ? x[i] + 0 : 0); bi = (i <= nb ? y[i] + 0 : 0);
+      if (ai > bi) { print "1"; exit }
+      if (ai < bi) { print "0"; exit }
+    }
+    print "0"
+  }'
+}
+
+update_banner() {
+  perl -CS -e '
+    my ($cur, $new, $tap, $color) = @ARGV;
+    my $c = sub { my ($code, $s) = @_; $color ? "\e[${code}m$s\e[0m" : $s };
+    my @lines = ("Update available  $cur \x{2192} $new", "brew upgrade $tap");
+    my $w = 0; for (@lines) { $w = length($_) if length($_) > $w }
+    my $bar = "\x{2500}" x ($w + 4);
+    print "\n  ", $c->("2;33", "\x{256D}$bar\x{256E}"), "\n";
+    print "  ", $c->("2;33", "\x{2502}"), "  ", $c->("1", $lines[0]),
+          " " x ($w - length($lines[0])), "  ", $c->("2;33", "\x{2502}"), "\n";
+    print "  ", $c->("2;33", "\x{2502}"), "  ", $c->("36", $lines[1]),
+          " " x ($w - length($lines[1])), "  ", $c->("2;33", "\x{2502}"), "\n";
+    print "  ", $c->("2;33", "\x{2570}$bar\x{256F}"), "\n\n";
+  ' "$VERSION" "$1" "$TAP" "$COLOR" >&2
+}
+
+update_check() {
+  [ -n "${CCFIND_NO_UPDATE_CHECK:-}" ] && return 0
+  command -v curl >/dev/null 2>&1 || return 0
+
+  local now checked tag
+  now=$(date +%s)
+  checked=0
+  tag=""
+  if [ -f "$LATEST" ]; then
+    IFS='	' read -r checked tag < "$LATEST" || true
+    case "$checked" in ''|*[!0-9]*) checked=0 ;; esac
+  fi
+
+  # Report from the cache so the hot path never waits on the network.
+  if [ -n "$tag" ] && [ "$(version_gt "$tag" "$VERSION")" = "1" ]; then
+    update_banner "$tag"
+  fi
+
+  # Refresh at most once a day, fully detached; the result shows up next run.
+  if [ $((now - checked)) -gt 86400 ]; then
+    (
+      t=$(curl -fsSL --max-time 5 -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
+          | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p' \
+          | head -1)
+      printf '%s\t%s\n' "$(date +%s)" "$t" > "$LATEST.tmp" 2>/dev/null && mv "$LATEST.tmp" "$LATEST"
+    ) >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+  fi
+}
+
+# ---------------------------------------------------------------- index refresh
+
+mkdir -p "$CACHE" || exit 1
+[ "$REINDEX" -eq 1 ] && rm -f "$IDX" "$MAN"
+touch "$IDX" "$MAN"
+
+TMP=$(mktemp -d) || exit 1
+trap 'rm -rf "$TMP"' EXIT
+
+# BSD stat and GNU stat disagree on everything except being called stat.
+if stat -f '%m' . >/dev/null 2>&1; then
+  STAT_FMT=(-f '%N	%m')
+else
+  STAT_FMT=(-c '%n	%Y')
+fi
+
+find "$ROOT" -name '*.jsonl' -type f -exec stat "${STAT_FMT[@]}" {} + 2>/dev/null | sort > "$TMP/manifest"
+comm -23 "$TMP/manifest" "$MAN" | cut -f1 > "$TMP/stale"
+cut -f1 "$TMP/manifest" > "$TMP/current"
+
+if [ -s "$TMP/stale" ]; then
+  [ -t 2 ] && printf '\033[2m  indexing %s session log(s)...\033[0m\r' \
+    "$(wc -l < "$TMP/stale" | tr -d ' ')" >&2
+
+  # Carry over rows from logs that are unchanged and still present.
+  awk -F'\t' -v s="$TMP/stale" -v c="$TMP/current" '
+    FILENAME == s { stale[$0] = 1; next }
+    FILENAME == c { cur[$0] = 1; next }
+    !($1 in stale) && ($1 in cur)
+  ' "$TMP/stale" "$TMP/current" "$IDX" > "$TMP/index"
+
+  # One row per typed prompt: file, timestamp, cwd, session id, prompt text.
+  JQ=$(cat <<'EOF'
+def text:
+  if (.message.content | type) == "string" then .message.content
+  else ([.message.content[]? | select(.type == "text") | .text] | join(" "))
+  end;
+fromjson? // empty
+| select(.type == "user" and (.origin.kind // "") == "human")
+| . as $m
+| (text | gsub("\\s+"; " ")) as $t
+| select($t != "")
+| [input_filename, $m.timestamp, ($m.cwd // "?"), $m.sessionId, ($t | .[0:2000])]
+| @tsv
+EOF
+)
+  tr '\n' '\0' < "$TMP/stale" | xargs -0 jq -rR "$JQ" 2>/dev/null >> "$TMP/index"
+
+  mv "$TMP/index" "$IDX"
+  cp "$TMP/manifest" "$MAN"
+  [ -t 2 ] && printf '\033[K' >&2
+fi
+
+[ -s "$IDX" ] || { echo "ccfind: index is empty - no sessions found under $ROOT" >&2; exit 1; }
+
+# ---------------------------------------------------------------- query
+
+if [ -n "$QUERY" ]; then
+  # The prompt that matched wins, newest first.
+  grep -i -- "$QUERY" "$IDX" > "$TMP/matched"
+else
+  # Browsing: a session's opening prompt names the topic far better than
+  # whatever "yes" happened to end it.
+  sort -t'	' -k2,2 "$IDX" > "$TMP/matched"
+fi
+
+awk -F'\t' 'NF && !seen[$4]++' "$TMP/matched" | sort -t'	' -k2,2r > "$TMP/deduped"
+TOTAL=$(grep -c . "$TMP/deduped")
+
+ROWS=()
+while IFS= read -r line; do
+  ROWS+=("$line")
+done < <(head -n "$LIMIT" "$TMP/deduped")
+
+if [ ${#ROWS[@]} -eq 0 ]; then
+  printf '\n  \033[33mno sessions match\033[0m \033[1m%s\033[0m\n\n' "$QUERY" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------- render
+
+PERL=$(cat <<'EOF'
+use strict;
+use warnings;
+use POSIX qw(strftime);
+use Time::Local qw(timegm);
+
+binmode(STDIN,  ':encoding(UTF-8)');
+binmode(STDOUT, ':encoding(UTF-8)');
+
+my ($query, $color, $width, $total) = @ARGV;
+utf8::decode($query);   # @ARGV arrives as bytes; the query may be non-ASCII
+$color = ($color eq '1');
+$width = 40  if $width < 40;
+$width = 110 if $width > 110;
+
+my %C = (DIM => '2', NUM => '1;36', DIR => '1;38;5;213', HIT => '1;30;43', TIME => '38;5;245');
+sub c { my ($code, $s) = @_; return $color ? "\e[${code}m$s\e[0m" : $s }
+
+sub ago {
+    my ($ts) = @_;
+    my @p = $ts =~ /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)/
+        or return (substr($ts, 0, 16), '');
+    my $epoch = eval { timegm($p[5], $p[4], $p[3], $p[2], $p[1] - 1, $p[0]) };
+    return (substr($ts, 0, 16), '') unless defined $epoch;
+    my $d = time - $epoch;
+    my $rel = $d <   3600 ? int($d / 60)    . "m ago"
+            : $d <  86400 ? int($d / 3600)  . "h ago"
+            : $d < 604800 ? int($d / 86400) . "d ago"
+            :               strftime("%b %d", localtime($epoch));
+    return ($rel, strftime("%H:%M", localtime($epoch)));
+}
+
+# Slash-command prompts are stored as XML; show them the way they were typed.
+sub clean {
+    my ($t) = @_;
+    if ($t =~ m{<command-name>\s*([^<]*)</command-name>}) {
+        my $name = $1;
+        my $args = ($t =~ m{<command-args>\s*([^<]*)</command-args>}) ? $1 : '';
+        for ($name, $args) { s/^\s+//; s/\s+$// }
+        $t = length($args) ? "$name $args" : $name;
+    }
+    $t =~ s{</?command-[a-z]+>}{ }g;
+    $t =~ s/^\s+//;
+    $t =~ s/\s+$//;
+    return $t;
+}
+
+sub highlight {
+    my ($s) = @_;
+    return $s unless $color && length $query;
+    my $q = quotemeta($query);
+    $s =~ s/($q)/c($C{HIT}, $1)/gie;
+    return $s;
+}
+
+sub wrap {
+    my ($s, $w, $max) = @_;
+    my @words = grep { length } split /\s+/, $s;
+    my (@lines, $cur);
+    $cur = '';
+    while (@words) {
+        my $word = shift @words;
+        if (length($word) > $w) {           # hard-break long URLs
+            unshift @words, substr($word, $w);
+            $word = substr($word, 0, $w);
+        }
+        if    ($cur eq '')                             { $cur = $word }
+        elsif (length($cur) + 1 + length($word) <= $w) { $cur .= " $word" }
+        else                                           { push @lines, $cur; $cur = $word }
+        last if @lines == $max;
+    }
+    if (@lines < $max && $cur ne '') { push @lines, $cur; $cur = '' }
+    if (@lines && ($cur ne '' || @words)) {
+        $lines[-1] = substr($lines[-1], 0, $w - 1) . "\x{2026}";
+    }
+    return @lines;
+}
+
+my @rows;
+while (my $l = <STDIN>) {
+    chomp $l;
+    next unless $l =~ /\S/;
+    push @rows, [ split /\t/, $l, 5 ];
+}
+exit 0 unless @rows;
+
+my $home  = $ENV{HOME} // '';
+my $shown = scalar @rows;
+my $label = length($query) ? "matching \"$query\"" : "most recent";
+my $tail  = $total > $shown ? " \x{00B7} showing $shown of $total" : "";
+
+print "\n  ", c($C{DIM}, "\x{256D}\x{2500} claude sessions \x{00B7} $label$tail"), "\n\n";
+
+my $i = 0;
+for my $r (@rows) {
+    $i++;
+    my (undef, $ts, $cwd, undef, $text) = @$r;
+    $text = '' unless defined $text;
+    my $path = $cwd;
+    $path =~ s/^\Q$home\E/~/ if length $home;
+    my ($head, $base) = $path =~ m{^(.*/)([^/]*)$} ? ($1, $2) : ('', $path);
+    my ($rel, $clock) = ago($ts);
+    my $stamp = length($clock) ? "$rel  $clock" : $rel;
+
+    my $pad = $width - length("$i") - 4 - length($path) - length($stamp);
+    $pad = 1 if $pad < 1;
+    print "  ", c($C{NUM}, sprintf("%2d", $i)), "  ",
+          c($C{DIM}, $head), c($C{DIR}, $base), " " x $pad, c($C{TIME}, $stamp), "\n";
+
+    for my $line (wrap(clean($text), $width - 8, 3)) {
+        print "      ", c($C{DIM}, "\x{2502} "), highlight($line), "\n";
+    }
+    print "\n";
+}
+EOF
+)
+
+printf '%s\n' "${ROWS[@]}" | perl -e "$PERL" -- "$QUERY" "$COLOR" "$WIDTH" "$TOTAL"
+
+update_check
+
+[ "$LIST_ONLY" -eq 1 ] && exit 0
+[ -t 0 ] || exit 0
+
+n=${#ROWS[@]}
+printf '  \033[2mresume\033[0m \033[1m[1-%d]\033[0m \033[2mor\033[0m \033[1mq\033[0m \033[2m>\033[0m ' "$n"
+read -r pick
+case "$pick" in
+  ''|*[!0-9]*) echo; exit 0 ;;
+esac
+[ "$pick" -ge 1 ] && [ "$pick" -le "$n" ] || { echo; exit 0; }
+
+IFS='	' read -r _f _ts cwd sid _text <<EOF
+${ROWS[$((pick - 1))]}
+EOF
+
+[ -d "$cwd" ] || { printf '\n  \033[33mgone:\033[0m %s\n\n' "$cwd" >&2; exit 1; }
+printf '\n  \033[2mresuming in\033[0m \033[1;38;5;213m%s\033[0m\n\n' "${cwd/#$HOME/\~}"
+cd "$cwd" || exit 1
+exec claude --resume "$sid"

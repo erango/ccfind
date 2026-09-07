@@ -1,0 +1,17 @@
+class Ccfind < Formula
+  desc "Find and resume Claude Code sessions across every directory"
+  homepage "https://github.com/erango/ccfind"
+  url "https://github.com/erango/ccfind/archive/refs/tags/v@VERSION@.tar.gz"
+  sha256 "@SHA256@"
+  license "MIT"
+
+  depends_on "jq"
+
+  def install
+    bin.install "bin/ccfind"
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/ccfind --version")
+  end
+end

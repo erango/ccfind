@@ -1,0 +1,118 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check VERSION matches the tag
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          VER="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' bin/ccfind | head -1)"
+          if [ "$TAG" != "$VER" ]; then
+            echo "tag $GITHUB_REF_NAME does not match VERSION=\"$VER\" in bin/ccfind" >&2
+            exit 1
+          fi
+          echo "version $VER" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Smoke test
+        run: bash test/smoke.sh
+
+      - name: Shellcheck
+        continue-on-error: true
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck -S warning bin/ccfind test/smoke.sh | tee shellcheck.txt || true
+          if [ -s shellcheck.txt ]; then
+            {
+              echo '<details><summary>shellcheck warnings</summary>'
+              echo; echo '```'; cat shellcheck.txt; echo '```'; echo '</details>'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Hash the release tarball
+        id: tarball
+        run: |
+          set -euo pipefail
+          URL="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          # The tag tarball can lag the push by a few seconds.
+          for i in 1 2 3 4 5 6; do
+            if curl -fsSL -o tarball.tgz "$URL"; then break; fi
+            echo "tarball not ready, retrying ($i)"; sleep 5
+          done
+          test -s tarball.tgz
+          SHA="$(sha256sum tarball.tgz | cut -d' ' -f1)"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "sha256: \`$SHA\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PREV="$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
+          if [ -n "$PREV" ]; then
+            RANGE="since $PREV"
+            CHANGES="$(git log --no-merges --pretty='- %s' "$PREV..$GITHUB_REF_NAME")"
+          else
+            RANGE="initial release"
+            CHANGES="$(git log --no-merges --pretty='- %s' "$GITHUB_REF_NAME")"
+          fi
+          {
+            echo "## What's changed ($RANGE)"
+            echo
+            echo "$CHANGES"
+            echo
+            echo '### Install'
+            echo
+            echo '```sh'
+            echo 'brew install erango/tap/ccfind'
+            echo '```'
+            echo
+            echo "\`sha256: ${{ steps.tarball.outputs.sha }}\`"
+          } > notes.md
+          gh release create "$GITHUB_REF_NAME" \
+            --title "ccfind ${GITHUB_REF_NAME#v}" \
+            --notes-file notes.md
+
+      - name: Bump the Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+          SHA: ${{ steps.tarball.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAP_TOKEN:-}" ]; then
+            echo "TAP_TOKEN not set - skipping tap bump (update Formula/ccfind.rb by hand)." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          VER="${GITHUB_REF_NAME#v}"
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/erango/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          sed -e "s|@VERSION@|$VER|g" -e "s|@SHA256@|$SHA|g" \
+            packaging/ccfind.rb.tmpl > tap/Formula/ccfind.rb
+          if grep -q '@VERSION@\|@SHA256@' tap/Formula/ccfind.rb; then
+            echo "formula template was not fully filled in" >&2
+            exit 1
+          fi
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/ccfind.rb
+          if git diff --cached --quiet; then
+            echo "tap already at $VER." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git commit -m "ccfind $VER"
+          git push
+          echo "Bumped erango/homebrew-tap to ccfind $VER." >> "$GITHUB_STEP_SUMMARY"
