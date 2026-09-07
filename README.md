@@ -33,7 +33,7 @@ Or drop [`bin/ccfind`](bin/ccfind) anywhere on your `PATH` — it's a single scr
 
 | Command | What it does |
 | --- | --- |
-| `ccfind <words...>` | Search your typed prompts, in every project |
+| `ccfind <words...>` | Open the picker with the search box pre-filled |
 | `ccfind` | List the most recent sessions, in every project |
 | `ccfind -n 40 <words>` | Cap the number of results (default 20) |
 | `ccfind -l <words>` | Print a plain list, no picker |
@@ -41,17 +41,24 @@ Or drop [`bin/ccfind`](bin/ccfind) anywhere on your `PATH` — it's a single scr
 | `ccfind --version` | Print the version |
 
 Results open in a picker sized to your terminal, so a long list scrolls instead of running off
-the top of the screen. Choose one and it runs `claude --resume <session-id>` in that session's
-original directory.
+the top of the screen. **Just type to search** — every keystroke re-filters against your whole
+prompt history, not only what's on screen. A word given on the command line simply seeds that
+search box, so `ccfind webhook` and typing `webhook` in the picker land in the same place.
 
 | Key | |
 | --- | --- |
-| <kbd>↑</kbd> <kbd>↓</kbd> · <kbd>k</kbd> <kbd>j</kbd> | Move |
-| <kbd>PgUp</kbd> <kbd>PgDn</kbd> · <kbd>^u</kbd> <kbd>^d</kbd> | Page |
-| <kbd>g</kbd> <kbd>G</kbd> | First / last |
-| digits | Jump straight to that number |
+| any character | Search, live |
+| <kbd>↑</kbd> <kbd>↓</kbd> · <kbd>^p</kbd> <kbd>^n</kbd> | Move |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Page |
+| <kbd>Home</kbd> <kbd>End</kbd> | First / last |
+| <kbd>Backspace</kbd> · <kbd>^w</kbd> <kbd>^u</kbd> | Delete a character / word / all |
 | <kbd>Enter</kbd> | Resume the highlighted session |
-| <kbd>q</kbd> <kbd>Esc</kbd> | Quit |
+| <kbd>Esc</kbd> | Clear the search, then quit |
+| <kbd>^c</kbd> | Quit |
+
+Because every letter types into the search box, there are no letter commands — navigation is
+arrows and control keys only. Choosing a session runs `claude --resume <session-id>` in its
+original directory.
 
 The picker draws on the alternate screen, so quitting leaves your scrollback exactly as it was.
 Use `-l` when you want the list to stay on screen or to pipe it somewhere.

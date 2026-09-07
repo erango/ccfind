@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0
+
+Search moved into the picker.
+
+- Type any character and the list re-filters live, against the **whole** index rather than the
+  rows already on screen. A word on the command line now just seeds that search box.
+- Because every letter types, the letter commands are gone: no more `j`/`k`, `g`/`G`, `q`, or
+  digit jumping. Navigation is arrows (or `^p`/`^n`), PgUp/PgDn, and Home/End.
+- Backspace, `^w` and `^u` edit the search; Esc clears it and quits when it is already empty;
+  `^c` always quits. The terminal cursor sits on the search line where you are typing.
+- Filtering and de-duplication moved out of the shell pipeline into the renderer, so the
+  command-line and in-picker paths cannot drift apart.
+
 ## 0.2.3
 
 - The selected session is marked by one arrow, not two bars: a solid `\u25b6` outside the index,

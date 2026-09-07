@@ -33,5 +33,13 @@ while True:
     if not chunk:
         break
     out += chunk
-os.waitpid(pid, 0)
+# the command may still be sitting at a prompt; do not wait forever for it
+try:
+    os.kill(pid, 15)
+except ProcessLookupError:
+    pass
+try:
+    os.waitpid(pid, 0)
+except ChildProcessError:
+    pass
 sys.stdout.buffer.write(out)

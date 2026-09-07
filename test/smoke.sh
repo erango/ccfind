@@ -16,6 +16,8 @@ mkdir -p "$CLAUDE_CONFIG_DIR/projects/-tmp-demo"
 cat > "$CLAUDE_CONFIG_DIR/projects/-tmp-demo/s1.jsonl" <<'JSON'
 {"type":"user","origin":{"kind":"human"},"timestamp":"2026-01-02T03:04:05.000Z","cwd":"/tmp/demo","sessionId":"11111111-1111-1111-1111-111111111111","message":{"role":"user","content":"teach me about widgets"}}
 {"type":"user","origin":{"kind":"human"},"timestamp":"2026-01-02T03:05:05.000Z","cwd":"/tmp/demo","sessionId":"11111111-1111-1111-1111-111111111111","message":{"role":"user","content":"<command-message>deploy</command-message><command-name>/deploy</command-name><command-args>prod</command-args>"}}
+{"type":"user","origin":{"kind":"human"},"timestamp":"2026-01-02T03:06:05.000Z","cwd":"/tmp/demo","sessionId":"11111111-1111-1111-1111-111111111111","message":{"role":"user","content":"demo-multi one"}}
+{"type":"user","origin":{"kind":"human"},"timestamp":"2026-01-02T03:07:05.000Z","cwd":"/tmp/demo","sessionId":"11111111-1111-1111-1111-111111111111","message":{"role":"user","content":"demo-multi two"}}
 {"type":"user","origin":{"kind":"human"},"timestamp":"2026-01-03T09:00:00.000Z","cwd":"/tmp/demo","sessionId":"22222222-2222-2222-2222-222222222222","message":{"role":"user","content":[{"type":"text","text":"שלום widgets in an array block"}]}}
 {"type":"user","message":{"role":"user","content":[{"tool_use_id":"t1","type":"tool_result","content":"widgets tool output that must not be indexed"}]}}
 {"type":"assistant","message":{"role":"assistant","content":"widgets assistant text that must not be indexed"}}
@@ -69,6 +71,22 @@ case "$frame" in *"▶"*) check 0 "picker frame marks the selection" ;;
 frame2=$(CCFIND_TUI_FRAME=1 CCFIND_TUI_FRAME_SEL=2 "$CCFIND" widgets 2>&1)
 case "$frame2" in *"2 of 2"*) check 0 "picker frame follows the selection" ;;
                            *) check 1 "picker frame follows the selection" ;; esac
+
+# The command-line query seeds the picker's search box, and filtering happens
+# in the renderer against the whole index.
+case "$frame" in *"› widgets"*) check 0 "search box is seeded from the command line" ;;
+                             *) check 1 "search box is seeded from the command line" ;; esac
+case "$frame" in *"type to search"*) check 0 "picker advertises live search" ;;
+                                  *) check 1 "picker advertises live search" ;; esac
+
+empty=$(CCFIND_TUI_FRAME=1 "$CCFIND" zzzz-no-such-prompt-zzzz 2>&1)
+case "$empty" in *"nothing matches"*) check 0 "picker shows an empty state" ;;
+                                   *) check 1 "picker shows an empty state" ;; esac
+
+# One session, two matching prompts: the search must still yield a single row.
+rows=$(CCFIND_NO_TUI=1 "$CCFIND" -l demo-multi 2>/dev/null | grep -cE '^ +[0-9]+  [~/]')
+[ "$rows" -le 1 ]
+check $? "a session with several matching prompts yields one row (got $rows)"
 
 # A short terminal must drop items rather than overflow it.
 tall=$(CCFIND_TUI_FRAME=1 LINES=40 "$CCFIND" widgets 2>&1 | wc -l | tr -d ' ')

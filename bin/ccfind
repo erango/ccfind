@@ -11,7 +11,7 @@
 
 set -uo pipefail
 
-VERSION="0.2.3"
+VERSION="0.3.0"
 REPO="erango/ccfind"
 TAP="erango/tap/ccfind"
 
@@ -38,13 +38,16 @@ usage:
   ccfind --reindex      rebuild the prompt index from scratch
   ccfind --version      print the version
 
-Results open in a picker sized to your terminal. Choosing one cd's to that
-session's directory and runs \`claude --resume <id>\`.
+Results open in a picker sized to your terminal. Type to narrow them down as
+you go; a word given on the command line just seeds that search. Choosing a
+session cd's to its directory and runs \`claude --resume <id>\`.
 
 picker keys:
-  up/down, k/j        move            enter           resume the highlighted one
-  pgup/pgdn, ^u/^d    page            digits          jump to that number
-  g / G               first / last    q, esc          quit
+  any character     search, live      enter       resume the highlighted one
+  up/down, ^p/^n    move              pgup/pgdn   page
+  home / end        first / last      backspace   delete a character
+  ^w / ^u           delete word/all   esc         clear the search, then quit
+  ^c                quit
 
 An index of your typed prompts lives in $CACHE and is refreshed
 incrementally - only session logs whose mtime changed are re-parsed.
@@ -208,46 +211,27 @@ fi
 
 [ -s "$IDX" ] || { echo "ccfind: index is empty - no sessions found under $ROOT" >&2; exit 1; }
 
-# ---------------------------------------------------------------- query
-
-if [ -n "$QUERY" ]; then
-  # The prompt that matched wins, newest first.
-  grep -i -- "$QUERY" "$IDX" > "$TMP/matched"
-else
-  # Browsing: a session's opening prompt names the topic far better than
-  # whatever "yes" happened to end it.
-  sort -t'	' -k2,2 "$IDX" > "$TMP/matched"
-fi
-
-awk -F'\t' 'NF && !seen[$4]++' "$TMP/matched" | sort -t'	' -k2,2r > "$TMP/deduped"
-TOTAL=$(grep -c . "$TMP/deduped")
-
-head -n "$LIMIT" "$TMP/deduped" > "$TMP/rows"
-
-if [ ! -s "$TMP/rows" ]; then
-  printf '\n  \033[33mno sessions match\033[0m \033[1m%s\033[0m\n\n' "$QUERY" >&2
-  exit 1
-fi
-
-# ---------------------------------------------------------------- render / pick
+# ---------------------------------------------------------------- query / render
 
 PERL=$(cat <<'EOF'
 use strict;
 use warnings;
 use POSIX qw(strftime);
 use Time::Local qw(timegm);
+use Encode qw(decode_utf8);
 use IO::Handle;
 
 binmode(STDOUT, ':encoding(UTF-8)');
 binmode(STDERR, ':encoding(UTF-8)');
 
-my ($mode, $rowsfile, $query, $color, $width, $total) = @ARGV;
+my ($mode, $indexfile, $query, $color, $width, $limit) = @ARGV;
 utf8::decode($query);   # @ARGV arrives as bytes; the query may be non-ASCII
 $color = ($color eq '1');
-$total = 0 + $total;
+$limit = 0 + $limit;
+$limit = 20 if $limit < 1;
 
 my %C = (DIM => '2', NUM => '1;36', DIR => '1;38;5;213', HIT => '1;30;43',
-         TIME => '38;5;245', SEL => '1;38;5;213');
+         TIME => '38;5;245', SEL => '1;38;5;213', WARN => '33');
 sub c { my ($code, $s) = @_; return $color ? "\e[${code}m$s\e[0m" : $s }
 
 sub clamp_width { my $w = shift; $w = 40 if $w < 40; $w = 110 if $w > 110; return $w }
@@ -281,14 +265,6 @@ sub clean {
     return $t;
 }
 
-sub highlight {
-    my ($s) = @_;
-    return $s unless $color && length $query;
-    my $q = quotemeta($query);
-    $s =~ s/($q)/c($C{HIT}, $1)/gie;
-    return $s;
-}
-
 sub wrap {
     my ($s, $w, $max) = @_;
     my @words = grep { length } split /\s+/, $s;
@@ -312,23 +288,57 @@ sub wrap {
     return @lines;
 }
 
-open(my $rfh, '<:encoding(UTF-8)', $rowsfile) or die "ccfind: cannot read rows\n";
-my @rows;
-while (my $l = <$rfh>) {
+my $QRY   = $query;   # the live search string
+my $TOTAL = 0;        # matching sessions, before the -n cap
+my @ROWS;             # the ones actually on screen
+my $BODY  = 3;        # prompt lines shown per session
+
+sub highlight {
+    my ($s) = @_;
+    return $s unless $color && length $QRY;
+    my $q = quotemeta($QRY);
+    $s =~ s/($q)/c($C{HIT}, $1)/gie;
+    return $s;
+}
+
+# The whole index lives in memory: filtering a keystroke has to search every
+# prompt, not just the ones already on screen.
+open(my $ifh, '<:encoding(UTF-8)', $indexfile) or die "ccfind: cannot read the index\n";
+my @index;
+while (my $l = <$ifh>) {
     chomp $l;
     next unless $l =~ /\S/;
-    push @rows, [ split /\t/, $l, 5 ];
+    my @f = split /\t/, $l, 5;
+    next unless @f == 5;
+    push @index, [ @f, lc $l ];    # [5] is the lowercased row, for matching
 }
-close $rfh;
-exit 0 unless @rows;
+close $ifh;
 
-my $home = $ENV{HOME} // '';
-my $BODY = 3;    # prompt lines shown per session
+sub refilter {
+    my ($q) = @_;
+    my @hits;
+    if (length $q) {
+        my $needle = lc $q;
+        # newest first, so dedupe keeps the prompt that matched
+        @hits = sort { $b->[1] cmp $a->[1] }
+                grep { index($_->[5], $needle) >= 0 } @index;
+    } else {
+        # oldest first, so dedupe keeps each session's opening prompt
+        @hits = sort { $a->[1] cmp $b->[1] } @index;
+    }
+    my (%seen, @out);
+    for my $r (@hits) { next if $seen{ $r->[3] }++; push @out, $r }
+    @out = sort { $b->[1] cmp $a->[1] } @out;
+    $TOTAL = scalar @out;
+    @ROWS  = $TOTAL > $limit ? @out[ 0 .. $limit - 1 ] : @out;
+    $QRY   = $q;
+}
 
 sub item_lines {
     my ($i, $row, $w, $sel) = @_;
     my (undef, $ts, $cwd, undef, $text) = @$row;
     $text = '' unless defined $text;
+    my $home = $ENV{HOME} // '';
     my $path = $cwd;
     $path =~ s/^\Q$home\E/~/ if length $home;
     my ($head, $base) = $path =~ m{^(.*/)([^/]*)$} ? ($1, $2) : ('', $path);
@@ -341,10 +351,9 @@ sub item_lines {
     $pad = 1 if $pad < 1;
 
     # Block elements, not box-drawing: they fill the whole character cell, so a
-    # run of them reads as one unbroken stroke instead of a dashed line. The
-    # selected session gets a solid arrow and a heavy rule.
-    my $lead = $sel ? c($C{SEL}, "\x{25B6}") . " " : "  ";                # black triangle
-    my $gut  = $sel ? c($C{SEL}, "\x{258C} ") : c($C{DIM}, "\x{258F} ");  # half vs eighth block
+    # run of them reads as one unbroken stroke instead of a dashed line.
+    my $lead = $sel ? c($C{SEL}, "\x{25B6}") . " " : "  ";               # black triangle
+    my $gut  = $sel ? c($C{SEL}, "\x{258C} ") : c($C{DIM}, "\x{258F} "); # half vs eighth block
 
     my @out = ($lead . c($C{NUM}, $num) . "  " . c($C{DIM}, $head) . c($C{DIR}, $base)
                . (" " x $pad) . c($C{TIME}, $stamp));
@@ -359,19 +368,24 @@ sub item_height {   # header + prompt lines + the blank line after
 }
 
 sub header_text {
-    my $label = length($query) ? "matching \"$query\"" : "most recent";
-    my $tail  = $total > @rows ? " \x{00B7} showing " . scalar(@rows) . " of $total" : "";
+    my $label = length($QRY) ? "matching \"$QRY\"" : "most recent";
+    my $tail  = $TOTAL > @ROWS ? " \x{00B7} showing " . scalar(@ROWS) . " of $TOTAL" : "";
     return "\x{256D}\x{2500} claude sessions \x{00B7} $label$tail";
 }
 
 sub render_static {
     my ($fh) = @_;
+    unless (@ROWS) {
+        print {$fh} "\n  ", c($C{WARN}, "no sessions match"), " ", c('1', $QRY), "\n\n";
+        return 1;
+    }
     my $w = clamp_width($width);
     print {$fh} "\n  ", c($C{DIM}, header_text()), "\n\n";
-    for my $i (0 .. $#rows) {
-        print {$fh} "$_\n" for item_lines($i + 1, $rows[$i], $w, 0);
+    for my $i (0 .. $#ROWS) {
+        print {$fh} "$_\n" for item_lines($i + 1, $ROWS[$i], $w, 0);
         print {$fh} "\n";
     }
+    return 0;
 }
 
 # ---------------------------------------------------------------- the picker
@@ -381,83 +395,107 @@ sub tty_size {
     # that complains about /dev/tty
     my $s = `{ stty size < /dev/tty; } 2>/dev/null`;
     return ($1, $2) if defined $s && $s =~ /(\d+)\s+(\d+)/;
-    # no terminal (a pipe, or CI): honour LINES/COLUMNS if they are set
     return (($ENV{LINES} || 24), ($ENV{COLUMNS} || 80));
 }
 
-# One screen's worth of lines, and the scroll offset that keeps $sel visible.
+# One screen: the scroll offset that keeps $sel visible, the lines to draw, and
+# where the cursor belongs on the search line.
 sub screen_lines {
-    my ($sel, $top, $height, $w, $numbuf) = @_;
-    my @h = map { item_height($rows[$_], $w) } 0 .. $#rows;
-
-    my $avail = $height - 4;        # header, blank, blank, hint
+    my ($sel, $top, $height, $w) = @_;
+    my $avail = $height - 5;        # header, blank, blank, search, hints
     $avail = 3 if $avail < 3;
 
-    my $fits = sub {                # last index visible when starting at $_[0]
-        my ($from) = @_;
-        my ($sum, $last) = (0, $from);
-        for my $i ($from .. $#rows) {
-            last if $sum + $h[$i] > $avail && $i > $from;
-            $sum += $h[$i];
-            $last = $i;
-        }
-        return $last;
-    };
-
-    $top = $sel if $sel < $top;
-    $top = $#rows if $top > $#rows;
-    $top++ while $top < $sel && $fits->($top) < $sel;
-
-    my $last = $fits->($top);
     my @lines = ("  " . c($C{DIM}, header_text()), "");
-    for my $i ($top .. $last) {
-        push @lines, item_lines($i + 1, $rows[$i], $w, $i == $sel), "";
+    my $last = -1;
+
+    if (!@ROWS) {
+        $top = 0;
+        push @lines, "  " . c($C{DIM}, "nothing matches - backspace to widen the search");
+    } else {
+        my @h = map { item_height($ROWS[$_], $w) } 0 .. $#ROWS;
+        my $fits = sub {
+            my ($from) = @_;
+            my ($sum, $end) = (0, $from);
+            for my $i ($from .. $#ROWS) {
+                last if $sum + $h[$i] > $avail && $i > $from;
+                $sum += $h[$i];
+                $end = $i;
+            }
+            return $end;
+        };
+        $top = $sel if $sel < $top;
+        $top = $#ROWS if $top > $#ROWS;
+        $top++ while $top < $sel && $fits->($top) < $sel;
+        $last = $fits->($top);
+        for my $i ($top .. $last) {
+            push @lines, item_lines($i + 1, $ROWS[$i], $w, $i == $sel), "";
+        }
+        pop @lines if @lines && $lines[-1] eq "";
     }
-    pop @lines if @lines && $lines[-1] eq "";
 
-    my $keys = length($numbuf)
-        ? "go to $numbuf \x{00B7} enter resume \x{00B7} esc clear"
-        : "\x{2191}\x{2193} move \x{00B7} enter resume \x{00B7} digits jump \x{00B7} q quit";
-    my $shown = sprintf("%s %d of %d %s",
-        $top > 0 ? "\x{2191}" : " ", $sel + 1, scalar @rows,
-        $last < $#rows ? "\x{2193}" : " ");
-    my $pad = $w - 2 - length($keys) - length($shown);
+    push @lines, "";
+    push @lines, "  " . c($C{SEL}, "\x{203A}") . " " . $QRY;   # the search line
+    my $cursor_row = scalar @lines;                            # 1-based: it is second to last
+    my $cursor_col = 5 + length($QRY);
+
+    my $keys = length($QRY)
+        ? "type to search \x{00B7} \x{2191}\x{2193} move \x{00B7} enter resume \x{00B7} esc clear"
+        : "type to search \x{00B7} \x{2191}\x{2193} move \x{00B7} enter resume \x{00B7} esc quit";
+    my $count = @ROWS
+        ? sprintf("%s %d of %d %s", $top > 0 ? "\x{2191}" : " ",
+                  $sel + 1, scalar @ROWS, $last < $#ROWS ? "\x{2193}" : " ")
+        : "";
+    my $pad = $w - 2 - length($keys) - length($count);
     $pad = 1 if $pad < 1;
-    push @lines, "", "  " . c($C{DIM}, $keys) . (" " x $pad) . c($C{TIME}, $shown);
+    push @lines, "  " . c($C{DIM}, $keys) . (" " x $pad) . c($C{TIME}, $count);
 
-    return ($top, \@lines);
+    return ($top, \@lines, $cursor_row, $cursor_col);
 }
 
+# Returns one decoded character, or a "\e[..." string for a control sequence.
 sub read_key {
     my ($fh) = @_;
     my $b;
     return undef unless sysread($fh, $b, 1);
-    return $b unless $b eq "\e";
-    my $rin = ''; vec($rin, fileno($fh), 1) = 1;
-    return "\e" unless select($rin, undef, undef, 0.06) > 0;
-    my $c2;
-    return "\e" unless sysread($fh, $c2, 1);
-    return "\e" unless $c2 eq '[' || $c2 eq 'O';
-    my $seq = '';
-    while (1) {
-        my $r = ''; vec($r, fileno($fh), 1) = 1;
-        last unless select($r, undef, undef, 0.06) > 0;
+
+    if ($b eq "\e") {
+        my $rin = ''; vec($rin, fileno($fh), 1) = 1;
+        return "\e" unless select($rin, undef, undef, 0.06) > 0;
+        my $c2;
+        return "\e" unless sysread($fh, $c2, 1);
+        return "\e" unless $c2 eq '[' || $c2 eq 'O';
+        my $seq = '';
+        while (1) {
+            my $r = ''; vec($r, fileno($fh), 1) = 1;
+            last unless select($r, undef, undef, 0.06) > 0;
+            my $ch;
+            last unless sysread($fh, $ch, 1);
+            $seq .= $ch;
+            last if $ch =~ /[A-Za-z~]/;
+        }
+        return "\e[$seq";
+    }
+
+    # gather the rest of a UTF-8 sequence so non-ASCII can be typed
+    my $lead = ord $b;
+    my $more = $lead >= 0xF0 ? 3 : $lead >= 0xE0 ? 2 : $lead >= 0xC0 ? 1 : 0;
+    while ($more-- > 0) {
         my $ch;
         last unless sysread($fh, $ch, 1);
-        $seq .= $ch;
-        last if $ch =~ /[A-Za-z~]/;
+        $b .= $ch;
     }
-    return "\e[$seq";
+    return length($b) > 1 ? decode_utf8($b) : $b;
 }
 
-# No usable terminal: fall back to the plain list plus a typed number.
+# No usable terminal: the plain list plus a typed number is all we can offer.
 sub fallback_pick {
+    return -1 unless @ROWS;
     render_static(\*STDERR);
-    print STDERR "  resume [1-" . scalar(@rows) . "] or q > ";
+    print STDERR "  resume [1-" . scalar(@ROWS) . "] or q > ";
     my $ans = <STDIN>;
     return -1 unless defined $ans;
     chomp $ans;
-    return -1 unless $ans =~ /^\d+$/ && $ans >= 1 && $ans <= @rows;
+    return -1 unless $ans =~ /^\d+$/ && $ans >= 1 && $ans <= @ROWS;
     return $ans - 1;
 }
 
@@ -470,13 +508,13 @@ sub pick {
     binmode($tty, ':encoding(UTF-8)');
     $tty->autoflush(1);
 
-    my $saved = `stty -g < /dev/tty 2>/dev/null`;
+    my $saved = `{ stty -g < /dev/tty; } 2>/dev/null`;
     chomp $saved;
     my $done = 0;
     my $restore = sub {
         return if $done;
         $done = 1;
-        print {$tty} "\e[?25h\e[?1049l";
+        print {$tty} "\e[?1049l";
         system("stty $saved < /dev/tty") if length $saved;
     };
     $SIG{INT} = $SIG{TERM} = sub { $restore->(); exit 130 };
@@ -484,70 +522,85 @@ sub pick {
     # -icanon -echo for key-at-a-time input, but keep output post-processing
     # so a plain "\n" still returns the cursor to column 0.
     system("stty -icanon -echo -isig min 1 time 0 < /dev/tty");
-    print {$tty} "\e[?1049h\e[?25l";
+    print {$tty} "\e[?1049h";
 
-    my ($sel, $top, $numbuf, $chosen) = (0, 0, '', undef);
+    my ($sel, $top, $chosen) = (0, 0, undef);
     while (1) {
         my ($h, $w) = tty_size();
-        my $lines;
-        ($top, $lines) = screen_lines($sel, $top, $h, clamp_width($w), $numbuf);
-        print {$tty} "\e[H", join("\e[K\n", @$lines), "\e[K\n\e[J";
+        my ($ntop, $lines, $crow, $ccol) = screen_lines($sel, $top, $h, clamp_width($w));
+        $top = $ntop;
+        print {$tty} "\e[H", join("\e[K\n", @$lines), "\e[K\n\e[J",
+                     "\e[${crow};${ccol}H";
 
         my $k = read_key($tin);
         last unless defined $k;
 
-        if    ($k eq "\e[A" || $k eq 'k')                { $sel--;     $numbuf = '' }
-        elsif ($k eq "\e[B" || $k eq 'j')                { $sel++;     $numbuf = '' }
-        elsif ($k eq "\e[5~" || $k eq "\x15")            { $sel -= 5;  $numbuf = '' }
-        elsif ($k eq "\e[6~" || $k eq "\x04")            { $sel += 5;  $numbuf = '' }
-        elsif ($k eq "\e[H" || $k eq 'g')                { $sel = 0;   $numbuf = '' }
-        elsif ($k eq "\e[F" || $k eq 'G')                { $sel = $#rows; $numbuf = '' }
-        elsif ($k eq "\r" || $k eq "\n")                 { $chosen = $sel; last }
-        elsif ($k eq 'q' || $k eq "\e" || $k eq "\x03")  { last }
-        elsif ($k =~ /^[0-9]$/) {
-            (my $try = $numbuf . $k) =~ s/^0+//;
-            if (length($try) && $try <= @rows) { $numbuf = $try; $sel = $try - 1 }
+        if    ($k eq "\e[A" || $k eq "\x10") { $sel-- }                      # up, ^p
+        elsif ($k eq "\e[B" || $k eq "\x0e") { $sel++ }                      # down, ^n
+        elsif ($k eq "\e[5~")                { $sel -= 5 }
+        elsif ($k eq "\e[6~")                { $sel += 5 }
+        elsif ($k eq "\e[H" || $k eq "\e[1~"){ $sel = 0 }
+        elsif ($k eq "\e[F" || $k eq "\e[4~"){ $sel = $#ROWS }
+        elsif ($k eq "\r" || $k eq "\n")     { if (@ROWS) { $chosen = $sel; last } }
+        elsif ($k eq "\x03")                 { last }                        # ^c
+        elsif ($k eq "\x04")                 { last unless length $QRY }     # ^d
+        elsif ($k eq "\e") {
+            last unless length $QRY;                                         # esc clears, then quits
+            refilter('');
+            ($sel, $top) = (0, 0);
         }
         elsif ($k eq "\x7f" || $k eq "\b") {
-            $numbuf = substr($numbuf, 0, -1);
-            $sel = $numbuf - 1 if length($numbuf);
+            if (length $QRY) { refilter(substr($QRY, 0, -1)); ($sel, $top) = (0, 0) }
+        }
+        elsif ($k eq "\x15") { refilter(''); ($sel, $top) = (0, 0) }         # ^u
+        elsif ($k eq "\x17") {                                               # ^w
+            (my $q = $QRY) =~ s/\s*\S+\s*$//;
+            refilter($q);
+            ($sel, $top) = (0, 0);
+        }
+        elsif ($k !~ /^[[:cntrl:]]$/) {      # any printable character types
+            refilter($QRY . $k);
+            ($sel, $top) = (0, 0);
         }
         $sel = 0      if $sel < 0;
-        $sel = $#rows if $sel > $#rows;
+        $sel = $#ROWS if $sel > $#ROWS;
+        $sel = 0      if $sel < 0;
     }
 
     $restore->();
     return defined $chosen ? $chosen : -1;
 }
 
+refilter($query);
+
 if ($mode eq 'static') {
-    render_static(\*STDOUT);
-    exit 0;
+    exit render_static(\*STDOUT);
 }
 
 # One static frame of the picker, for the README captures and the tests.
 if ($mode eq 'frame') {
     my ($h, $w) = tty_size();
     my $sel = ($ENV{CCFIND_TUI_FRAME_SEL} || 1) - 1;
-    my (undef, $lines) = screen_lines($sel, 0, $h, clamp_width($w), '');
+    $sel = 0 if $sel < 0 || $sel > $#ROWS;
+    my (undef, $lines) = screen_lines($sel, 0, $h, clamp_width($w));
     print "$_\n" for @$lines;
-    exit 0;
+    exit(@ROWS ? 0 : 1);
 }
 
 my $idx = pick();
 exit 0 if $idx < 0;
-print "$rows[$idx][2]\t$rows[$idx][3]\n";
+print "$ROWS[$idx][2]\t$ROWS[$idx][3]\n";
 EOF
 )
 
 if [ -n "${CCFIND_TUI_FRAME:-}" ]; then
   # internal: one static frame of the picker, for the README captures and tests
-  perl -e "$PERL" -- frame "$TMP/rows" "$QUERY" "$COLOR" "$WIDTH" "$TOTAL"
-  exit 0
+  perl -e "$PERL" -- frame "$IDX" "$QUERY" "$COLOR" "$WIDTH" "$LIMIT"
+  exit $?
 fi
 
 if [ "$LIST_ONLY" -eq 0 ] && [ -z "${CCFIND_NO_TUI:-}" ] && [ -t 0 ] && [ -t 1 ]; then
-  PICKED=$(perl -e "$PERL" -- pick "$TMP/rows" "$QUERY" 1 "$WIDTH" "$TOTAL")
+  PICKED=$(perl -e "$PERL" -- pick "$IDX" "$QUERY" 1 "$WIDTH" "$LIMIT")
   update_check
   [ -n "$PICKED" ] || exit 0
   cwd=${PICKED%%	*}
@@ -558,5 +611,7 @@ if [ "$LIST_ONLY" -eq 0 ] && [ -z "${CCFIND_NO_TUI:-}" ] && [ -t 0 ] && [ -t 1 ]
   exec claude --resume "$sid"
 fi
 
-perl -e "$PERL" -- static "$TMP/rows" "$QUERY" "$COLOR" "$WIDTH" "$TOTAL"
+perl -e "$PERL" -- static "$IDX" "$QUERY" "$COLOR" "$WIDTH" "$LIMIT"
+rc=$?
 update_check
+exit $rc
