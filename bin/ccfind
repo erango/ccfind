@@ -11,7 +11,7 @@
 
 set -uo pipefail
 
-VERSION="0.1.0"
+VERSION="0.1.1"
 REPO="erango/ccfind"
 TAP="erango/tap/ccfind"
 
@@ -77,8 +77,11 @@ QUERY="$*"
 
 COLOR=1
 if [ -n "${NO_COLOR:-}" ] || [ ! -t 1 ]; then COLOR=0; fi
-WIDTH=$( { tput cols; } 2>/dev/null || echo 80 )
-case "$WIDTH" in ''|*[!0-9]*) WIDTH=80 ;; esac
+# Ask the terminal itself: inside $( ) stdout is a pipe, and `tput cols` then
+# reports terminfo's default 80 rather than the real width.
+WIDTH=$(stty size 2>/dev/null < /dev/tty | cut -d' ' -f2)
+case "$WIDTH" in ''|*[!0-9]*|0) WIDTH=$( { tput cols; } 2>/dev/null || echo 80 ) ;; esac
+case "$WIDTH" in ''|*[!0-9]*|0) WIDTH=80 ;; esac
 
 # ---------------------------------------------------------------- update check
 
@@ -328,9 +331,11 @@ for my $r (@rows) {
     my ($rel, $clock) = ago($ts);
     my $stamp = length($clock) ? "$rel  $clock" : $rel;
 
-    my $pad = $width - length("$i") - 4 - length($path) - length($stamp);
+    # the index is printed in a 2-wide field, so measure what is actually drawn
+    my $num = sprintf("%2d", $i);
+    my $pad = $width - 4 - length($num) - length($path) - length($stamp);
     $pad = 1 if $pad < 1;
-    print "  ", c($C{NUM}, sprintf("%2d", $i)), "  ",
+    print "  ", c($C{NUM}, $num), "  ",
           c($C{DIM}, $head), c($C{DIR}, $base), " " x $pad, c($C{TIME}, $stamp), "\n";
 
     for my $line (wrap(clean($text), $width - 8, 3)) {
