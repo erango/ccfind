@@ -23,9 +23,14 @@ row web/c.jsonl   2026-08-30T18:05:00.000Z web   demo-0003 '"the settings page s
 row infra/d.jsonl 2026-08-24T11:20:00.000Z infra demo-0004 '"<command-message>deploy</command-message><command-name>/deploy</command-name><command-args>staging --wait</command-args>"'
 
 run() { env -i HOME="$HOME_DIR" PATH="$PATH" TERM=xterm-256color ${1:+"$@"}; }
-strip() { perl -0777 -pe 's/^[^\n]*indexing[^\n]*\n//m; s/(resume.*?>\x1b\[0m) q/$1/s'; }
+# The transient "indexing..." notice ends in \r and shares its line with what
+# follows, so drop everything up to each \r rather than the whole line.
+strip() { perl -0777 -pe 's/[^\n\r]*\r(?!\n)//g; s/(resume.*?>\x1b\[0m) q/$1/s'; }
 
-run CCFIND_NO_UPDATE_CHECK=1 python3 "$HERE/capture.py" "$COLS" 30 "$CCFIND" webhook | strip > "$WORK/hero.ansi"
+# CCFIND_TUI_FRAME draws exactly one frame of the picker, so the capture shows
+# the real interactive view without driving keystrokes through the pty.
+run CCFIND_NO_UPDATE_CHECK=1 CCFIND_TUI_FRAME=1 CCFIND_TUI_FRAME_SEL=2 \
+  python3 "$HERE/capture.py" "$COLS" 22 "$CCFIND" webhook | strip > "$WORK/hero.ansi"
 
 # a cached "newer release" far in the future keeps the banner offline and deterministic
 mkdir -p "$CFG/ccfind-cache"; printf '9999999999\t0.3.0\n' > "$CFG/ccfind-cache/latest"

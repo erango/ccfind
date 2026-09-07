@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0
+
+Results now open in a picker instead of dumping the whole list.
+
+- The list is sized to your terminal and scrolls, so twenty results no longer run off the top
+  of the screen.
+- Navigate with the arrow keys or `k`/`j`, page with PgUp/PgDn or `^u`/`^d`, jump with `g`/`G`.
+  Typing digits still jumps straight to a number, and Enter resumes the highlighted session.
+- The picker uses the alternate screen, so quitting leaves your scrollback untouched.
+- `-l`, a non-tty stdout, and `CCFIND_NO_TUI=1` all fall back to the plain list.
+
 ## 0.1.1
 
 Two width bugs, both found while capturing the README preview at a fixed terminal size.

@@ -8,7 +8,7 @@
 [![homebrew](https://img.shields.io/badge/brew-erango%2Ftap%2Fccfind-56d4dd?labelColor=161b22)](https://github.com/erango/homebrew-tap)
 [![license](https://img.shields.io/github/license/erango/ccfind?color=8b949e&labelColor=161b22)](LICENSE)
 
-<img src="docs/preview.svg" alt="ccfind searching every project directory for sessions mentioning webhook" width="720">
+<img src="docs/preview.svg" alt="the ccfind picker showing sessions across project directories that mention webhook" width="720">
 
 </div>
 
@@ -36,11 +36,25 @@ Or drop [`bin/ccfind`](bin/ccfind) anywhere on your `PATH` — it's a single scr
 | `ccfind <words...>` | Search your typed prompts, in every project |
 | `ccfind` | List the most recent sessions, in every project |
 | `ccfind -n 40 <words>` | Cap the number of results (default 20) |
-| `ccfind -l <words>` | List only, don't offer to resume |
+| `ccfind -l <words>` | Print a plain list, no picker |
 | `ccfind --reindex` | Rebuild the prompt index from scratch |
 | `ccfind --version` | Print the version |
 
-Pick a number and it runs `claude --resume <session-id>` in that session's original directory.
+Results open in a picker sized to your terminal, so a long list scrolls instead of running off
+the top of the screen. Choose one and it runs `claude --resume <session-id>` in that session's
+original directory.
+
+| Key | |
+| --- | --- |
+| <kbd>↑</kbd> <kbd>↓</kbd> · <kbd>k</kbd> <kbd>j</kbd> | Move |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> · <kbd>^u</kbd> <kbd>^d</kbd> | Page |
+| <kbd>g</kbd> <kbd>G</kbd> | First / last |
+| digits | Jump straight to that number |
+| <kbd>Enter</kbd> | Resume the highlighted session |
+| <kbd>q</kbd> <kbd>Esc</kbd> | Quit |
+
+The picker draws on the alternate screen, so quitting leaves your scrollback exactly as it was.
+Use `-l` when you want the list to stay on screen or to pipe it somewhere.
 
 Searching matches the whole index row, so a folder name works as a query too — `ccfind fred-agent`
 finds every session that ran there.
@@ -50,6 +64,8 @@ finds every session that ran there.
 With no query you get the most recent sessions across every directory. Browsing shows each
 session's **opening** prompt, which names the topic — unlike whatever `yes` happened to end it.
 Searching instead shows the prompt that **matched**, with the match highlighted.
+
+Below, `-l` prints the plain list — the same rendering without the picker.
 
 <div align="center">
 <img src="docs/browse.svg" alt="ccfind listing the most recent sessions, with an update banner" width="720">
@@ -83,6 +99,7 @@ fully detached, and reports from cache — so it never adds latency, and never b
 | --- | --- |
 | `CLAUDE_CONFIG_DIR` | Where Claude Code keeps its data (default `~/.claude`) |
 | `CCFIND_NO_UPDATE_CHECK` | Set to anything to disable the update check |
+| `CCFIND_NO_TUI` | Set to anything to print a plain list instead of the picker |
 | `NO_COLOR` | Set to anything to disable color |
 
 ## Requirements

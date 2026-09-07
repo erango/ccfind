@@ -56,6 +56,29 @@ case "$out" in *"command-name"*) check 1 "no raw command XML leaks" ;;
 "$CCFIND" --version | grep -qE '^ccfind [0-9]+\.[0-9]+\.[0-9]+$'
 check $? "--version prints a semver"
 
+# The picker draws one frame per keystroke; CCFIND_TUI_FRAME renders exactly one
+# so it can be asserted on without a terminal.
+frame=$(CCFIND_TUI_FRAME=1 "$CCFIND" widgets 2>&1)
+case "$frame" in *"enter resume"*) check 0 "picker frame shows the key hints" ;;
+                               *) check 1 "picker frame shows the key hints"; echo "$frame" ;; esac
+case "$frame" in *"1 of 2"*) check 0 "picker frame shows the position" ;;
+                          *) check 1 "picker frame shows the position" ;; esac
+case "$frame" in *"▸"*) check 0 "picker frame marks the selection" ;;
+                     *) check 1 "picker frame marks the selection" ;; esac
+
+frame2=$(CCFIND_TUI_FRAME=1 CCFIND_TUI_FRAME_SEL=2 "$CCFIND" widgets 2>&1)
+case "$frame2" in *"2 of 2"*) check 0 "picker frame follows the selection" ;;
+                           *) check 1 "picker frame follows the selection" ;; esac
+
+# A short terminal must drop items rather than overflow it.
+tall=$(CCFIND_TUI_FRAME=1 LINES=40 "$CCFIND" widgets 2>&1 | wc -l | tr -d ' ')
+short=$(CCFIND_TUI_FRAME=1 LINES=9 "$CCFIND" widgets 2>&1 | wc -l | tr -d ' ')
+[ "$short" -lt "$tall" ] && [ "$short" -le 9 ]
+check $? "frame shrinks to fit a short terminal ($short lines at 9 rows, $tall at 40)"
+
+CCFIND_NO_TUI=1 "$CCFIND" widgets >/dev/null 2>&1
+check $? "CCFIND_NO_TUI falls back to the plain list"
+
 "$CCFIND" --help | grep -q 'usage:'
 check $? "--help prints usage"
 
