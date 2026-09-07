@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.3
+
+- The selected session is marked by one arrow, not two bars: a solid `\u25b6` outside the index,
+  and its prompt rule thickened to a half block. 0.2.1 had added an outer bar as well, which
+  read as a doubled rule.
+
 ## 0.2.2
 
 - Fixed: `sh: /dev/tty: Device not configured` leaked to stderr when the terminal size was
