@@ -31,6 +31,19 @@ BAR  = 34            # title bar height
 
 SGR = re.compile(r"\x1b\[([0-9;]*)m")
 
+# Vertical rules drawn as glyphs leave a seam between lines, because a glyph is
+# shorter than the line box. Draw them as rects exactly one line tall instead,
+# so a column of them tiles into one unbroken stroke. char -> (x offset, width)
+# as fractions of a character cell.
+BLOCKS = {
+    "\u258f": (0.0, 0.125),   # left one-eighth block
+    "\u258e": (0.0, 0.25),    # left one-quarter block
+    "\u258c": (0.0, 0.5),     # left half block
+    "\u2588": (0.0, 1.0),     # full block
+    "\u2502": (0.45, 0.08),   # light vertical
+    "\u2503": (0.41, 0.16),   # heavy vertical
+}
+
 
 def parse(text):
     """-> list of lines, each a list of (column, string, sgr-code)."""
@@ -78,13 +91,33 @@ def render(lines, title, cmd, cols):
                     f'width="{len(text) * CW + 2:.1f}" height="{FS + 4:.1f}" '
                     f'rx="3" fill="{bg}"/>'
                 )
-            # Give every glyph its own x. Terminal alignment then holds no
-            # matter which monospace font the viewer happens to resolve.
-            xs = " ".join(f"{x + i * CW:.1f}" for i in range(len(text)))
-            spans.append(
-                f'<tspan x="{xs}" fill="{fill}" font-weight="{weight}">'
-                f'{html.escape(text)}</tspan>'
-            )
+            def emit(start_x, chunk):
+                # Give every glyph its own x. Terminal alignment then holds no
+                # matter which monospace font the viewer happens to resolve.
+                xs = " ".join(f"{start_x + i * CW:.1f}" for i in range(len(chunk)))
+                spans.append(
+                    f'<tspan x="{xs}" fill="{fill}" font-weight="{weight}">'
+                    f'{html.escape(chunk)}</tspan>'
+                )
+
+            buf, buf_x = "", x
+            for k, ch in enumerate(text):
+                cx = x + k * CW
+                if ch not in BLOCKS:
+                    if not buf:
+                        buf_x = cx
+                    buf += ch
+                    continue
+                if buf:
+                    emit(buf_x, buf)
+                    buf = ""
+                off, frac = BLOCKS[ch]
+                rects.append(
+                    f'<rect x="{cx + off * CW:.2f}" y="{y - LH * 0.78:.1f}" '
+                    f'width="{frac * CW:.2f}" height="{LH:.1f}" fill="{fill}"/>'
+                )
+            if buf:
+                emit(buf_x, buf)
         if spans:
             body.append("".join(rects))
             body.append(f'<text y="{y:.1f}" xml:space="preserve">{"".join(spans)}</text>')

@@ -63,7 +63,7 @@ case "$frame" in *"enter resume"*) check 0 "picker frame shows the key hints" ;;
                                *) check 1 "picker frame shows the key hints"; echo "$frame" ;; esac
 case "$frame" in *"1 of 2"*) check 0 "picker frame shows the position" ;;
                           *) check 1 "picker frame shows the position" ;; esac
-case "$frame" in *"▸"*) check 0 "picker frame marks the selection" ;;
+case "$frame" in *"▌"*) check 0 "picker frame marks the selection" ;;
                      *) check 1 "picker frame marks the selection" ;; esac
 
 frame2=$(CCFIND_TUI_FRAME=1 CCFIND_TUI_FRAME_SEL=2 "$CCFIND" widgets 2>&1)

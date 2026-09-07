@@ -11,7 +11,7 @@
 
 set -uo pipefail
 
-VERSION="0.2.0"
+VERSION="0.2.1"
 REPO="erango/ccfind"
 TAP="erango/tap/ccfind"
 
@@ -340,12 +340,15 @@ sub item_lines {
     my $pad = $w - 4 - length($num) - length($path) - length($stamp);
     $pad = 1 if $pad < 1;
 
-    my $lead = $sel ? c($C{SEL}, "\x{25B8}") . " " : "  ";
-    my $gut  = $sel ? c($C{SEL}, "\x{2503} ")      : c($C{DIM}, "\x{2502} ");
+    # Block elements, not box-drawing: they fill the whole character cell, so a
+    # run of them reads as one unbroken stroke instead of a dashed line. The
+    # selected session carries that bar down its entire left edge.
+    my $bar = $sel ? c($C{SEL}, "\x{258C}") : " ";                      # left half block
+    my $gut = $sel ? c($C{SEL}, "\x{258F} ") : c($C{DIM}, "\x{258F} "); # left one-eighth
 
-    my @out = ($lead . c($C{NUM}, $num) . "  " . c($C{DIM}, $head) . c($C{DIR}, $base)
+    my @out = ($bar . " " . c($C{NUM}, $num) . "  " . c($C{DIM}, $head) . c($C{DIR}, $base)
                . (" " x $pad) . c($C{TIME}, $stamp));
-    push @out, "      " . $gut . highlight($_) for wrap(clean($text), $w - 8, $BODY);
+    push @out, $bar . "     " . $gut . highlight($_) for wrap(clean($text), $w - 8, $BODY);
     return @out;
 }
 

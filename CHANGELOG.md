@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.1
+
+Legibility of the picker.
+
+- The left rules are block elements now (`▏`, `▌`) rather than box-drawing characters.
+  A block fills its whole character cell, so a column of them reads as one unbroken stroke
+  instead of a dashed line.
+- The selected session is marked by a solid bar down its entire left edge, replacing the small
+  `▸` arrow.
+- The README captures render those rules as full-height rects, so the SVG shows the same
+  unbroken stroke a terminal does.
+
 ## 0.2.0
 
 Results now open in a picker instead of dumping the whole list.
