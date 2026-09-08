@@ -8,7 +8,7 @@
 [![homebrew](https://img.shields.io/badge/brew-erango%2Ftap%2Fccfind-56d4dd?labelColor=161b22)](https://github.com/erango/homebrew-tap)
 [![license](https://img.shields.io/github/license/erango/ccfind?color=8b949e&labelColor=161b22)](LICENSE)
 
-<img src="docs/preview.svg" alt="the ccfind picker showing sessions across project directories that mention webhook" width="720">
+<img src="docs/preview.svg" alt="the ccfind picker, its search box filtering sessions from every project directory down to those mentioning webhook" width="720">
 
 </div>
 
@@ -34,7 +34,7 @@ Or drop [`bin/ccfind`](bin/ccfind) anywhere on your `PATH` — it's a single scr
 | Command | What it does |
 | --- | --- |
 | `ccfind <words...>` | Open the picker with the search box pre-filled |
-| `ccfind` | List the most recent sessions, in every project |
+| `ccfind` | Open the picker on your most recent sessions |
 | `ccfind -n 40 <words>` | Cap the number of results (default 20) |
 | `ccfind -l <words>` | Print a plain list, no picker |
 | `ccfind --reindex` | Rebuild the prompt index from scratch |
@@ -96,6 +96,11 @@ of the index over untouched. In practice that's the one session you have open ri
 | --- | --- |
 | First run, full build | **~5s** |
 | Every run after | **~0.2s** |
+| Each keystroke in the picker | **in memory** |
+
+The picker holds that whole index in memory, which is what lets a keystroke re-filter your entire
+history rather than only the rows on screen — no re-reading, no shelling out, no minimum query
+length.
 
 The update check keeps that hot path clean: it hits the GitHub releases API at most once a day,
 fully detached, and reports from cache — so it never adds latency, and never blocks you offline.
@@ -113,7 +118,7 @@ fully detached, and reports from cache — so it never adds latency, and never b
 
 - **bash 3.2+** — stock macOS bash is fine
 - **`jq`**
-- **perl 5** with `POSIX` and `Time::Local`, both core — system perl on macOS and Linux works
+- **perl 5** with `POSIX`, `Time::Local` and `Encode`, all core — system perl on macOS and Linux works
 
 Tested on macOS and Linux.
 

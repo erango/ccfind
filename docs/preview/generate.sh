@@ -32,8 +32,12 @@ strip() { perl -0777 -pe 's/[^\n\r]*\r(?!\n)//g; s/(resume.*?>\x1b\[0m) q/$1/s';
 run CCFIND_NO_UPDATE_CHECK=1 CCFIND_TUI_FRAME=1 CCFIND_TUI_FRAME_SEL=2 \
   python3 "$HERE/capture.py" "$COLS" 22 "$CCFIND" webhook | strip > "$WORK/hero.ansi"
 
-# a cached "newer release" far in the future keeps the banner offline and deterministic
-mkdir -p "$CFG/ccfind-cache"; printf '9999999999\t0.3.0\n' > "$CFG/ccfind-cache/latest"
+# A cached "newer release" far in the future keeps the banner offline and
+# deterministic. Derive it from the current VERSION: a hardcoded number stops
+# being newer the moment that version ships, and the banner silently vanishes.
+NEXT=$(awk -F'"' '/^VERSION=/ { split($2, v, "."); printf "%d.%d.0", v[1], v[2] + 1; exit }' "$CCFIND")
+mkdir -p "$CFG/ccfind-cache"
+printf '9999999999\t%s\n' "$NEXT" > "$CFG/ccfind-cache/latest"
 run python3 "$HERE/capture.py" "$COLS" 30 "$CCFIND" -l | strip > "$WORK/browse.ansi"
 
 python3 "$HERE/ansi2svg.py" "$WORK/hero.ansi"   "$REPO/docs/preview.svg" ccfind "ccfind webhook" "$COLS"
